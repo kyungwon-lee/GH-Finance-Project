@@ -1,0 +1,385 @@
+---
+title: "생존분석"
+author: "Growth Hackers"
+data: "20200205"
+output:
+  html_document:
+    number_sections: true
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**라이브러리**
+```{r, warning=FALSE, message=FALSE}
+library(KMsurv)
+library(survival)
+library(ggplot2)
+library(survminer)
+library(car) #vif 할때 쓰임
+library(maxstat) #cutpoint 찾을 때 쓰임
+library(party) #cutpoint 찾을 떄 쓰임
+```
+
+**데이터 불러오기**
+```{r}
+df = read.csv('E:/Growth Hackers/2019-2/project_bank/result_survival.csv',header=T)
+```
+    
+# 전처리       
+## 생존분석을 위한 데이터 형태로 변환
+     
+새로 생기는 변수는 다음과 같다  
+    
+- failure: 부도이면 1, 부도가 아니면 0     
+- time: 기업설립일로부터 부도날짜(현재 날짜) 까지의 기간
+```{r}
+#fail(부도) 여부 변수 생성
+df[,"failure"] = ifelse(is.na(df$suspension_date),0,1)
+
+#suspension_date 가 없는 경우 최근 날짜 입력 -> censoring 표시 위해
+df$suspension_date = ifelse(is.na(df$suspension_date),"20200205",df$suspension_date)
+
+#establish_date 를 character 로 변환 (날짜로 바꿀떄 char 에서 date 로 바꿔야 해서)
+df$establish_date=as.character(df$establish_date)
+
+#기업 설립일으로 부터 부도 날짜(현재)까지 기간 time 변수 생성 
+df[,"time"] = as.integer(as.Date(df$suspension_date,format="%Y%m%d")-as.Date(df$establish_date,format = "%Y%m%d"))
+head(df$time)
+
+```
+
+## KNN으로 검증된 변수 선택
+```{r}
+colnames(df)
+
+#
+data=df[,c("ked_code","business_number","debt","accounts_receivable","avg_credit_payment_ratio","share_holders_count","non_current_liabilities","operating_profit","failure","time")]
+```
+     
+**결측치 제거**
+```{r}
+data<-na.omit(data)
+```
+ 
+**참고) 부도 난 기업과 부도나지 않은 기업의 비율 확인**
+```{r}
+table(data[,"failure"])  
+```
+     
+# VIF
+다중공산성은 종속변수 Y에 대해 설명변수들 간 강한 상관관계로부터 나온다.   
+다중공산성 문제를 사전에 방지하기 위한 다양한 진단법 중 하나가 분산팽창계수를 계산하여 분산팽창요인(Variance Inflation Factor, VIF) 를 찾는 것이다.
+
+**설명변수 고르기**
+```{r}
+vif_check<-subset(data,select=-c(ked_code, business_number,failure))
+```
+
+**종속변수(time) 과 설명변수 회귀분석**
+```{r}
+lmfit<-lm(time~ . , data=vif_check)
+#회귀 결과 확인하고 싶다면 아래 코드 진행
+#summary(lmfit)
+```
+    
+**vif**
+회귀 결과 vif 가 10 초과이면 다중공산성이 존재한다. 
+```{r}
+vif(lmfit)
+
+#vif 값이 10 초과인지 TRUE/FALSE
+a<-vif(lmfit)>10
+#vif 값이 10 이하 인 변수만을 가져와라
+vif_variable<-rownames(data.frame(a[a==FALSE]))
+#data에 vif 결과 FALSE 인 변수들만 남도록
+data<-data[,c("ked_code", "business_number","failure","time",vif_variable)]
+colnames(data)
+```
+
+# 전체 데이터 기준 생존함수
+```{r}
+surv_data = Surv(time=data$time,event=data$failure)
+ggsurvplot(survfit(formula=surv_data~1,data=surv_data,conf.type="plain"))
+```
+
+# 단변량 분석
+
+단변량 분석은 각 변수별로 유의성을 알아보기 위해 log-rank test 를 진행한다.       
+log-rank test 를 진행하기 위해서는 연속형 변수를 범주형 변수로 변환해야하는데,      
+이 방법으로는 maximally selected rank statistics를 이용한다. 
+  
+
+     
+        
+아래 식을 귀무가설로 설정하고, log-rank statistic 값이 일정 값보다 크면 귀무가설 기각한다.   
+$$H_0: P(Y\le y | X \le \mu) = P(Y\le y | X > \mu)$$
+maximally selected rank statistics 는 귀무가설을 기각할 수 있는 log-rank statistic 이 가장 크게 나오는 값을 찾아준다.     
+이 값을  cutpoint($\mu$) 로 여겨 연속형 변수를 범주형 변수로 바꿀 것이다. 
+
+## accounts_receivable   
+### 연속형변수 범주형으로 바꾸기     
+**연속형변수 범주형으로 바꿀 cutpoint 찾기**
+
+```{r}
+mstat<-maxstat.test(Surv(time,failure)~accounts_receivable,data=data,smethod="LogRank",pmethod="exactGauss",abseps=0.01)
+
+mstat
+```
+
+maximally selected rank statistics  결과 accounts_receivable 의 cutpoint 는 509091 이다. 확인을 위해서 log-rank statistic 을 그래프로 그려보면, 509091 에서 log-rank statistic 값이 가장 큰걸 확인할 수 있다. 
+```{r}
+plot(mstat)
+```
+
+**cutpoint 를 기준으로 범주형 데이터로 생존함수 그려보자**
+```{r}
+gp_ar<-ifelse(data$accounts_receivable<=mstat$estimate, 0,1)
+
+gp_ar<-factor(gp_ar)
+table(gp_ar)
+```
+gp_ar 이 위와 같이 잘 나뉜것을 확인 할 수 있다. 
+
+```{r}
+levels(gp_ar)<-c("below ", "above")
+fit<-survfit(surv_data~gp_ar,data=data)
+ggsurvplot(fit,data=data,pval=TRUE)
+```
+
+logranktest에 대한 p value 가 0.05보다 작으므로, accounts_receivable 변수는 유의미하다.       
+    
+### time dependency check    
+추후의 다변량 분석 방법을 정하기 위해서는 time dependency 를 알아봐야한다.      
+만약 time dependent 한 변수가 있다면 time dependent cox regression 모델을 적용해야하고,     
+time dependent 한 변수가 없다면 cox-ph 를 적용한다. 
+
+lml curv 를 그렸을때 그래프가 교차하는 경우 시간에 따라서 hazard ratio 가 다르다는 뜻으로, time depent 변수라는 것이다. 
+   
+추후에 time dependent cox regression 모델을 적용하기 위해    
+변수가 어느 시간을 기준으로 hazard ratio 가 달라지는지 알아보자. 
+
+**lml curv**
+```{r}
+ggsurvplot(fit,data=data, fun="cloglog",xlim=c(100,30000))
+```
+  
+두 그래프가 교차한다.  따라서 accounts_receivable는 time dependent variable
+   
+**splitpoint 확인**
+```{r}
+ggsurvplot(fit,data=data, fun="cloglog",xlim=c(3000,3400))
+#splitpoint 3200
+```
+   
+    
+## avg_credit_payment_ratio
+
+```{r}
+mstat<-maxstat.test(Surv(time,failure)~avg_credit_payment_ratio,data=data,smethod="LogRank",pmethod="exactGauss",abseps=0.01)
+
+gp_acpr<-ifelse(data$avg_credit_payment_ratio<=mstat$estimate, 0,1)
+gp_acpr<-factor(gp_acpr)
+levels(gp_acpr)<-c("below ", "above")
+
+fit<-survfit(surv_data~gp_acpr,data=data)
+ggsurvplot(fit,data=data,pval=TRUE)
+```
+  
+p-value 가 0.05보다 크므로 avg_credit_payment_ratio 는 유의미한 변수가 아니다. 
+
+## share_holders_count
+아래 코드도 같은 원리로 작동되는데, 그래프가 다르게 나옵니다.     
+(이유는 모르겠지만 앞서 작성한 코드가 에러 났어요.   
+Error in cmaxstat(scores, x, weights = weights, pmethod, minprop, maxprop,  : 
+  no data between minprop, maxprop)
+```{r}
+test<-ctree(Surv(time,failure)~share_holders_count,data=data)
+test
+plot(test)
+```
+  
+p-value 가 0.05보다 작으므로 share_holders_count 는 유의미한 변수입니다.
+
+  
+### time dependency check    
+    
+**lml curv**
+```{r}
+gp_shc<-ifelse(data$share_holders_count<=1, 0,1)
+gp_shc<-factor(gp_shc)
+levels(gp_shc)<-c("below", "above")
+
+fit<-survfit(surv_data~gp_shc,data=data)
+ggsurvplot(fit,data=data, fun="cloglog",xlim=c(100,30000))
+
+```
+  
+두 그래프가 교차하지 않는다. 따라서 share_holders_count는 time independent variable  
+
+    
+   
+## non_current_liabilities
+```{r}
+mstat<-maxstat.test(Surv(time,failure)~non_current_liabilities,data=data,smethod="LogRank",pmethod="exactGauss",abseps=0.01)
+
+gp_ncl<-ifelse(data$non_current_liabilities<=mstat$estimate, 0,1)
+gp_ncl<-factor(gp_ncl)
+levels(gp_ncl)<-c("below ", "above")
+
+fit<-survfit(surv_data~gp_ncl,data=data)
+ggsurvplot(fit,data=data,pval=TRUE)
+```
+
+p-value 가 0.05보다 작으므로 non_current_liabilities 는 유의미한 변수입니다. 
+
+### time dependency check    
+ 
+**lml curv**
+```{r}
+ggsurvplot(fit,data=data, fun="cloglog",xlim=c(100,30000))
+```
+  
+두 그래프가 교차한다. 따라서 non_current_liabilities는 time dependent variable
+   
+**splitpoint 확인**
+```{r}
+ggsurvplot(fit,data=data, fun="cloglog",xlim=c(1500,1700))
+#splitpoint 1600
+ggsurvplot(fit,data=data, fun="cloglog",xlim=c(15000,16000))
+#splitpoint 15500
+```
+  
+    
+    
+# 다변량분석 
+단변량 분석에서 유의미하지 않다고 판단된 avg_credit_payment_ratio 변수를 지운다.
+```{r}
+data<-subset(data,select=-c(avg_credit_payment_ratio))
+colnames(data)
+```
+## time dependent cox regression
+
+단변량 분석 결과 요약: share_holders_count 는 time independent,      
+그 외 변수 (accounts_receivable, avg_credit_payment_ratio(유의미하지 않은 변수),non_current_liabilities) 는 time dependent 이다.
+
+share_holders_count 랑 다른 변수랑 같이 time dependent cox regression 하면 에러 뜸    
+     
+(Ran out of iterations and did not converge)
+
+```{r}
+new<-survSplit(Surv(time,failure)~.,data, cut=c(1600,3200,15500),episode='tgroup',id='id')
+#accounts_receivable 3200
+#non_current_liabilities 1600, 15500
+
+coxph(Surv(tstart,time,failure)~accounts_receivable:strata(tgroup)+non_current_liabilities:strata(tgroup),data=new)
+```
+
+
+time dependent 변수의 cox regression 결과를 분석해보면,      accounts_receivable이 tgroup 3 에 있는 경우의 p value 만 0.05 보다 작기 때문에, 이 결과만 유의미하다. 
+     
+
+exp(coef) 가 아래 식에서 $exp(\beta^TZ)$ 에 해당하는 값이고, coef 는 $\beta$ 에 해당하는 값이다.     
+$\beta$ 가 음수 이므로, tgroup3($3200<t \le 15500$)의 accounts_receivable 이 증가하면,    
+부도확률은 낮아진다.       
+하지만 비율($exp(\beta^TZ)$)을 고려했을때 낮아지는 정도는 아주 미세하다. 
+
+$$h(t|Z)=h_0(t)exp(\beta^TZ)$$
+```{r}
+coxph(Surv(time,failure)~share_holders_count,data=data)
+```
+
+share_holders_count 가 증가하면 부도날 확률은 감소하고, 그 값은 약 0.7배가 된다. 
+
+    
+## time independent 가정 
+```{r}
+coxph(Surv(time,failure)~share_holders_count+accounts_receivable+non_current_liabilities,data=data)
+```
+
+time dependency 를 무시하고 time independent 가정하고 coxph 하면   
+share_holders_count 와 accounts_receivable 이 유의미한 결과값을 가진다.       
+share_holders_count 이 증가하면 부도날 확률이 감소하고, 그 값은 약 0.7배가 된다.    
+accounts_receivable 이 증가하면 부도날 확률이 감소하긴 하지만 감소량이 미미하다. 
+
+   
+time dependent 인 변수를 independent 라고 가정했을 때도 비슷한 결과가 나왔기 때문에, 부도율을 예상 할 수 있는 coxph를 적용하기 위하여 independent 라고 받아들이자.
+   
+# survival function prediction
+
+특정 조건이 주어졌을때, 부도날 확률을 예상해보자. 
+   
+예상에 앞서, 다변량분석을 했을떄 유의미하지 않다고 나온     
+non_current_liabilities 변수는 제외하고 다시 coxph 모델을 적용하자. 
+```{r}
+data2 <- df[,c("ked_code","business_number","accounts_receivable","share_holders_count","failure","time")]
+data2 <- na.omit(data2)
+table(data2$failure)
+```
+
+```{r final coxph func}
+test<-coxph(Surv(time,failure)~share_holders_count+accounts_receivable,data=data2)
+```
+
+**predict**
+```{r}
+predict<-survfit(test,c(share_holders_count=1,accounts_receivable=2500000 ))
+plot(predict, xlab="time", ylab="survival",xlim = c(0,10000))
+```
+
+그래프를 해석하자면, 
+share_holders_count 가 1, accounts_receivable 이 2500000 의 조건을 가진 기업이 기업설립일로부터 10000일 이후로 부도나지 않고 살아남을 확률이 약 50% 이다. 
+
+식으로 표현하면 아래와 같다. 
+
+X: 기업이 설립일로부터 부도나지 않고 유지된 일 수
+$$P(X> 10000)=0.5$$
+
+부도난 기업 293, 부도나지 않은 기업 321 총 614개의 기업에 대해 
+```{r}
+surv_day <- function(dt,prob) {
+  Y = 0; N = 0
+  for(i in 1:614){
+    predict<-survfit(test,c(share_holders_count=dt$share_holders_count[i],
+                            accounts_receivable=dt$accounts_receivable[i]))
+    
+    save = min(predict$time[which(abs(predict$surv-prob) == min(abs(predict$surv-prob)))])
+    
+    if(dt$failure[i] == 1){
+      Y = Y+save} else {
+        N = N + save
+        }
+  }
+  result = c(Y/293,N/321)
+  names(result) = c("bankruptcy_Y_day_mean","bankruptcy_N_day_mean")
+  return(result)
+}
+
+surv_day(data2,0.3)
+```
+
+```{r}
+#survfit을 이용해서 확률을 구했는데 그 확률이 높은건지 낮은건지 알 수 없으니까 부도난 기업과 부도나지 않은 기업들의 평균으로 기준을 마련해주는 용도 
+surv_prob <- function(dt,day) {
+  Y = 0; N = 0
+  for(i in 1:614){
+    predict<-survfit(test,c(share_holders_count=dt$share_holders_count[i],
+                            accounts_receivable=dt$accounts_receivable[i]))
+    
+    save = predict$surv[which(abs(predict$time-day) == min(abs(predict$time-day)))]
+    
+    if(dt$failure[i] == 1){
+      Y = Y+save} else {
+        N = N + save
+        }
+  }
+  result = c(Y/293,N/321)
+  names(result) = c("bankruptcy_Y_prob_mean","bankruptcy_N_prob_mean")
+  return(result)
+}
+
+surv_prob(data2,10000)
+```
