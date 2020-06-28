@@ -22,7 +22,7 @@ Growth Hackers Winter vacation Project : Prediction of default rate using corpor
     본 프로젝트의 경우는 ‘Right Censored Survival analysis’로 이론을 다음 경우에 한하여만 설명하도록 하겠습니다.Right Censored라 함은 데이터가 특정 값보다 위에 있으나 정확히는 어떤 값인지 알 수 없는 상태를 말합니다.사건이 일어난 경우에는 그 시점을 알고 있지만, 사건이 아직 일어나지 않은 경우에는 그 이후에 사건이 일어나고 그 시점을 알 수 없다는 뜻입니다.
 
     생존분석에서 생존함수는 다음과 같이 정의됩니다.
-    #### S(t) = Pr(T > t)
+     S(t) = Pr(T > t)
     여기서 T가 right censored data인 경우 T=min(X,C)로 정의되는데, 사건이 일어난 경우는 X 사건이 일어나지 않았으면 그 censoring time을 C라 하여 위와같은 식이 성립합니다.
 
     생존함수 외에 우리가 사용하는 또다른 함수로 위험함수(hazard function)이 있습니다.
@@ -32,13 +32,13 @@ Growth Hackers Winter vacation Project : Prediction of default rate using corpor
     이렇듯 생존함수와 위험함수를 추정하면 생존률과 위험률을 예측할 수 있습니다.
     이를 추정하기 위한 방법으로 Cox proportional hazard model(Cox 비례위험모형)을 이용했습니다. 본 모델의 수식은 다음과 같습니다.
 
-    #### h(t|Z) = h0(t)exp(B^t * Z)
+     h(t|Z) = h0(t)exp(B^t * Z)
     Z: 사건에 영향을 주는 변수들, : 회귀 계수, h0(t) : baselin hazard
 
     이 모델의 특징은 h0 (t)라 하는 baseline hazard가 있다는 것인데, 사건에 영향이 있는 변수들은 모두 시간의 영향을 받지 않고, baseline hazard만이 시간에 관한 함수라는 것입니다.
     이 모델을 이용하여 해석을 하는 방법은 다음과 같습니다.
     변수가 두개라고 가정을 하면 cox ph model의 형태는
-    #### h(t|Z) = h0(t)exp(B0 + B1Z1 + B2Z2)
+     h(t|Z) = h0(t)exp(B0 + B1Z1 + B2Z2)
     로 표현할 수 있습니다.
     이 경우 Z1이라는 변수가 한 단위 많아졌을 때 위험률의 증감은 exp(1)로 해석할 수 있습니다.
 
